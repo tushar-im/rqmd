@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "rqmd"
+path = "src/main.rs"
+
 [dependencies]
 retrieval-core = { path = "../retrieval-core" }
 inference-runtime = { path = "../inference-runtime" }

@@ -103,7 +103,7 @@ fn unescape_index_field(input: &str) -> Result<String, String> {
 }
 fn cmd_index(corpus_dir: &str, chunk_size: usize) -> Result<(), String> {
     let chunks = read_markdown_dir(Path::new(corpus_dir), chunk_size)?;
-    let index_path = Path::new(corpus_dir).join(".qmd_chunks.tsv");
+    let index_path = Path::new(corpus_dir).join(".rqmd_chunks.tsv");
     write_chunk_index(&index_path, &chunks)?;
     println!(
         "indexed {} chunks from {} -> {}",
@@ -115,7 +115,7 @@ fn cmd_index(corpus_dir: &str, chunk_size: usize) -> Result<(), String> {
 }
 
 fn cmd_query(corpus_dir: &str, query: &str, top_k: usize, chunk_size: usize) -> Result<(), String> {
-    let index_path = Path::new(corpus_dir).join(".qmd_chunks.tsv");
+    let index_path = Path::new(corpus_dir).join(".rqmd_chunks.tsv");
     let chunks = if index_path.exists() {
         read_chunk_index(&index_path)?
     } else {
@@ -166,7 +166,7 @@ fn main() {
             Ok(())
         }
         _ => {
-            eprintln!("usage: qmd-rs <index|query|serve> [args...]");
+            eprintln!("usage: rqmd <index|query|serve> [args...]");
             Err("invalid command".to_string())
         }
     };
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn read_markdown_dir_errors_when_empty() {
-        let dir = std::env::temp_dir().join("qmd_rs_empty_md");
+        let dir = std::env::temp_dir().join("rqmd_empty_md");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("mkdir");
         let err = read_markdown_dir(&dir, 16).expect_err("expected empty error");
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn chunk_index_round_trip() {
-        let dir = std::env::temp_dir().join("qmd_rs_chunk_index_rt");
+        let dir = std::env::temp_dir().join("rqmd_chunk_index_rt");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("mkdir");
 
@@ -207,7 +207,7 @@ mod tests {
                 text: "vector\nsearch".into(),
             },
         ];
-        let path = dir.join(".qmd_chunks.tsv");
+        let path = dir.join(".rqmd_chunks.tsv");
         write_chunk_index(&path, &chunks).expect("write index");
         let loaded = read_chunk_index(&path).expect("read index");
         assert_eq!(loaded, chunks);
