@@ -29,7 +29,12 @@ pub trait Expander: Send + Sync {
     fn expand(&self, query: &str) -> RuntimeResult<Vec<String>>;
 }
 pub trait Generator: Send + Sync {
-    fn generate(&self, query: &str, context: &[String], max_tokens: usize) -> RuntimeResult<GeneratedText>;
+    fn generate(
+        &self,
+        query: &str,
+        context: &[String],
+        max_tokens: usize,
+    ) -> RuntimeResult<GeneratedText>;
 }
 
 #[derive(Default)]
@@ -41,7 +46,10 @@ pub struct RuntimeRegistry {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum QualityPreset { Small, BalancedQuality }
+pub enum QualityPreset {
+    Small,
+    BalancedQuality,
+}
 
 #[derive(Clone, Debug)]
 pub struct ModelManifest {
@@ -58,7 +66,10 @@ pub struct ModelCache {
 
 impl ModelCache {
     pub fn new(root: impl AsRef<Path>) -> Self {
-        Self { root: root.as_ref().to_path_buf(), loaded: HashMap::new() }
+        Self {
+            root: root.as_ref().to_path_buf(),
+            loaded: HashMap::new(),
+        }
     }
 
     pub fn ensure_layout(&self) -> RuntimeResult<()> {
@@ -68,7 +79,10 @@ impl ModelCache {
     }
 
     pub fn quantized_by_default(preset: QualityPreset) -> bool {
-        matches!(preset, QualityPreset::Small | QualityPreset::BalancedQuality)
+        matches!(
+            preset,
+            QualityPreset::Small | QualityPreset::BalancedQuality
+        )
     }
 }
 
@@ -76,14 +90,18 @@ pub fn adaptive_should_rerank(fused_top_score: f32, agreement_ratio: f32) -> boo
     !(fused_top_score > 0.92 && agreement_ratio > 0.8)
 }
 
-pub fn capped_max_tokens(requested: usize, cap: usize) -> usize { requested.min(cap) }
+pub fn capped_max_tokens(requested: usize, cap: usize) -> usize {
+    requested.min(cap)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     struct NoopEmbedder;
     impl Embedder for NoopEmbedder {
-        fn embed(&self, input: &str) -> RuntimeResult<Embedding> { Ok(Embedding(vec![input.len() as f32])) }
+        fn embed(&self, input: &str) -> RuntimeResult<Embedding> {
+            Ok(Embedding(vec![input.len() as f32]))
+        }
     }
 
     #[test]
