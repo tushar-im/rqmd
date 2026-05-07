@@ -1,9 +1,15 @@
-use retrieval_core::{build_retrieval_indices, chunk_markdown, reciprocal_rank_fusion, LexicalRetriever, VectorRetriever};
+use retrieval_core::{
+    build_retrieval_indices, chunk_markdown, reciprocal_rank_fusion, LexicalRetriever,
+    VectorRetriever,
+};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn read_markdown_dir(dir: &Path, chunk_size: usize) -> Result<Vec<retrieval_core::DocumentChunk>, String> {
+fn read_markdown_dir(
+    dir: &Path,
+    chunk_size: usize,
+) -> Result<Vec<retrieval_core::DocumentChunk>, String> {
     let mut paths: Vec<PathBuf> = fs::read_dir(dir)
         .map_err(|e| e.to_string())?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
@@ -13,7 +19,10 @@ fn read_markdown_dir(dir: &Path, chunk_size: usize) -> Result<Vec<retrieval_core
 
     let mut chunks = Vec::new();
     for path in paths {
-        let doc_id = path.file_stem().and_then(|x| x.to_str()).ok_or("invalid filename")?;
+        let doc_id = path
+            .file_stem()
+            .and_then(|x| x.to_str())
+            .ok_or("invalid filename")?;
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
         chunks.extend(chunk_markdown(doc_id, &content, chunk_size));
     }
@@ -24,14 +33,61 @@ fn read_markdown_dir(dir: &Path, chunk_size: usize) -> Result<Vec<retrieval_core
     Ok(chunks)
 }
 
+fn write_chunk_index(
+    output_path: &Path,
+    chunks: &[retrieval_core::DocumentChunk],
+) -> Result<(), String> {
+    let mut out = String::new();
+    for chunk in chunks {
+        let text = chunk.text.replace('\t', " ").replace('\n', " ");
+        out.push_str(&chunk.id);
+        out.push('\t');
+        out.push_str(&text);
+        out.push('\n');
+    }
+    fs::write(output_path, out).map_err(|e| e.to_string())
+}
+
+fn read_chunk_index(index_path: &Path) -> Result<Vec<retrieval_core::DocumentChunk>, String> {
+    let raw = fs::read_to_string(index_path).map_err(|e| e.to_string())?;
+    let mut chunks = Vec::new();
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, '\t');
+        let id = parts.next().ok_or("missing chunk id")?;
+        let text = parts.next().ok_or("missing chunk text")?;
+        chunks.push(retrieval_core::DocumentChunk {
+            id: id.to_string(),
+            text: text.to_string(),
+        });
+    }
+    if chunks.is_empty() {
+        return Err(format!("index {} is empty", index_path.display()));
+    }
+    Ok(chunks)
+}
 fn cmd_index(corpus_dir: &str, chunk_size: usize) -> Result<(), String> {
     let chunks = read_markdown_dir(Path::new(corpus_dir), chunk_size)?;
-    println!("indexed {} chunks from {}", chunks.len(), corpus_dir);
+    let index_path = Path::new(corpus_dir).join(".qmd_chunks.tsv");
+    write_chunk_index(&index_path, &chunks)?;
+    println!(
+        "indexed {} chunks from {} -> {}",
+        chunks.len(),
+        corpus_dir,
+        index_path.display()
+    );
     Ok(())
 }
 
 fn cmd_query(corpus_dir: &str, query: &str, top_k: usize, chunk_size: usize) -> Result<(), String> {
-    let chunks = read_markdown_dir(Path::new(corpus_dir), chunk_size)?;
+    let index_path = Path::new(corpus_dir).join(".qmd_chunks.tsv");
+    let chunks = if index_path.exists() {
+        read_chunk_index(&index_path)?
+    } else {
+        read_markdown_dir(Path::new(corpus_dir), chunk_size)?
+    };
     let (bm25, ann) = build_retrieval_indices(chunks);
     let lexical = bm25.search(query, top_k.max(1));
     let vector = ann.search(query, top_k.max(1));
@@ -53,14 +109,23 @@ fn main() {
     let result = match args.get(1).map(String::as_str) {
         Some("index") => {
             let corpus = args.get(2).map(String::as_str).unwrap_or("eval/corpus");
-            let chunk_size = args.get(3).and_then(|x| x.parse::<usize>().ok()).unwrap_or(64);
+            let chunk_size = args
+                .get(3)
+                .and_then(|x| x.parse::<usize>().ok())
+                .unwrap_or(64);
             cmd_index(corpus, chunk_size)
         }
         Some("query") => {
             let corpus = args.get(2).map(String::as_str).unwrap_or("eval/corpus");
             let query = args.get(3).map(String::as_str).unwrap_or("rust retrieval");
-            let top_k = args.get(4).and_then(|x| x.parse::<usize>().ok()).unwrap_or(5);
-            let chunk_size = args.get(5).and_then(|x| x.parse::<usize>().ok()).unwrap_or(64);
+            let top_k = args
+                .get(4)
+                .and_then(|x| x.parse::<usize>().ok())
+                .unwrap_or(5);
+            let chunk_size = args
+                .get(5)
+                .and_then(|x| x.parse::<usize>().ok())
+                .unwrap_or(64);
             cmd_query(corpus, query, top_k, chunk_size)
         }
         Some("serve") => {
@@ -79,7 +144,6 @@ fn main() {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +155,30 @@ mod tests {
         fs::create_dir_all(&dir).expect("mkdir");
         let err = read_markdown_dir(&dir, 16).expect_err("expected empty error");
         assert!(err.contains("no markdown files"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chunk_index_round_trip() {
+        let dir = std::env::temp_dir().join("qmd_rs_chunk_index_rt");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("mkdir");
+
+        let chunks = vec![
+            retrieval_core::DocumentChunk {
+                id: "doc:0".into(),
+                text: "hello rust".into(),
+            },
+            retrieval_core::DocumentChunk {
+                id: "doc:1".into(),
+                text: "vector search".into(),
+            },
+        ];
+        let path = dir.join(".qmd_chunks.tsv");
+        write_chunk_index(&path, &chunks).expect("write index");
+        let loaded = read_chunk_index(&path).expect("read index");
+        assert_eq!(loaded, chunks);
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

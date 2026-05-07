@@ -12,12 +12,46 @@ pub struct RetrievalResult {
     pub score: f32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentRecord {
+    pub id: String,
+    pub title: Option<String>,
+    pub body: String,
+    pub metadata: HashMap<String, String>,
+}
+
+pub fn parse_markdown_record(doc_id: &str, content: &str) -> DocumentRecord {
+    let mut lines = content.lines();
+    let first = lines.next().unwrap_or_default().trim();
+    let title = first.strip_prefix("# ").map(str::to_string);
+    let body = content.trim().to_string();
+    let mut metadata = HashMap::new();
+    metadata.insert("source_format".into(), "markdown".into());
+    metadata.insert(
+        "token_count".into(),
+        normalize_tokens(&body).len().to_string(),
+    );
+    DocumentRecord {
+        id: doc_id.to_string(),
+        title,
+        body,
+        metadata,
+    }
+}
+
+pub fn chunk_record(record: &DocumentRecord, chunk_size: usize) -> Vec<DocumentChunk> {
+    chunk_markdown(&record.id, &record.body, chunk_size)
+}
+
 pub fn chunk_markdown(doc_id: &str, content: &str, chunk_size: usize) -> Vec<DocumentChunk> {
     let words: Vec<&str> = content.split_whitespace().collect();
     words
         .chunks(chunk_size.max(1))
         .enumerate()
-        .map(|(i, chunk)| DocumentChunk { id: format!("{doc_id}:{i}"), text: chunk.join(" ") })
+        .map(|(i, chunk)| DocumentChunk {
+            id: format!("{doc_id}:{i}"),
+            text: chunk.join(" "),
+        })
         .collect()
 }
 
@@ -25,7 +59,13 @@ pub fn normalize_tokens(input: &str) -> Vec<String> {
     input
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() || c.is_whitespace() {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .map(|s| s.to_string())
@@ -50,8 +90,12 @@ pub struct Bm25Index {
 }
 
 impl Bm25Index {
-    pub fn new(chunks: Vec<DocumentChunk>) -> Self { Self::with_params(chunks, 1.2, 0.75) }
-    pub fn documents(&self) -> &[DocumentChunk] { &self.docs }
+    pub fn new(chunks: Vec<DocumentChunk>) -> Self {
+        Self::with_params(chunks, 1.2, 0.75)
+    }
+    pub fn documents(&self) -> &[DocumentChunk] {
+        &self.docs
+    }
     pub fn with_params(chunks: Vec<DocumentChunk>, k1: f32, b: f32) -> Self {
         let mut doc_term_freqs = Vec::with_capacity(chunks.len());
         let mut doc_freqs: HashMap<String, usize> = HashMap::new();
@@ -70,8 +114,19 @@ impl Bm25Index {
             doc_term_freqs.push(tf);
         }
 
-        let avg_doc_len = if chunks.is_empty() { 0.0 } else { total_doc_len as f32 / chunks.len() as f32 };
-        Self { docs: chunks, doc_term_freqs, doc_freqs, avg_doc_len, k1, b }
+        let avg_doc_len = if chunks.is_empty() {
+            0.0
+        } else {
+            total_doc_len as f32 / chunks.len() as f32
+        };
+        Self {
+            docs: chunks,
+            doc_term_freqs,
+            doc_freqs,
+            avg_doc_len,
+            k1,
+            b,
+        }
     }
 
     fn idf(&self, term: &str) -> f32 {
@@ -81,14 +136,19 @@ impl Bm25Index {
     }
 
     fn score_doc(&self, query_terms: &[String], doc_idx: usize) -> f32 {
-        if self.docs.is_empty() { return 0.0; }
+        if self.docs.is_empty() {
+            return 0.0;
+        }
         let tf = &self.doc_term_freqs[doc_idx];
         let doc_len = tf.values().sum::<usize>() as f32;
         query_terms.iter().fold(0.0, |acc, term| {
             let f_qd = *tf.get(term).unwrap_or(&0) as f32;
-            if f_qd <= 0.0 { return acc; }
+            if f_qd <= 0.0 {
+                return acc;
+            }
             let idf = self.idf(term);
-            let denom = f_qd + self.k1 * (1.0 - self.b + self.b * (doc_len / self.avg_doc_len.max(1e-6)));
+            let denom =
+                f_qd + self.k1 * (1.0 - self.b + self.b * (doc_len / self.avg_doc_len.max(1e-6)));
             acc + idf * ((f_qd * (self.k1 + 1.0)) / denom)
         })
     }
@@ -101,7 +161,10 @@ impl LexicalRetriever for Bm25Index {
             .docs
             .iter()
             .enumerate()
-            .map(|(i, doc)| RetrievalResult { id: doc.id.clone(), score: self.score_doc(&query_terms, i) })
+            .map(|(i, doc)| RetrievalResult {
+                id: doc.id.clone(),
+                score: self.score_doc(&query_terms, i),
+            })
             .filter(|result| result.score > 0.0)
             .collect();
         scored.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
@@ -120,7 +183,11 @@ impl AnnIndex {
         let docs = chunks.to_vec();
         let doc_terms = docs
             .iter()
-            .map(|d| normalize_tokens(&d.text).into_iter().collect::<HashSet<_>>())
+            .map(|d| {
+                normalize_tokens(&d.text)
+                    .into_iter()
+                    .collect::<HashSet<_>>()
+            })
             .collect();
         Self { docs, doc_terms }
     }
@@ -128,7 +195,11 @@ impl AnnIndex {
     fn jaccard_score(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
         let inter = a.intersection(b).count() as f32;
         let union = a.union(b).count() as f32;
-        if union <= 0.0 { 0.0 } else { inter / union }
+        if union <= 0.0 {
+            0.0
+        } else {
+            inter / union
+        }
     }
 }
 
@@ -139,7 +210,10 @@ impl VectorRetriever for AnnIndex {
             .docs
             .iter()
             .zip(self.doc_terms.iter())
-            .map(|(d, terms)| RetrievalResult { id: d.id.clone(), score: Self::jaccard_score(&q, terms) })
+            .map(|(d, terms)| RetrievalResult {
+                id: d.id.clone(),
+                score: Self::jaccard_score(&q, terms),
+            })
             .filter(|r| r.score > 0.0)
             .collect();
         out.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
@@ -147,18 +221,51 @@ impl VectorRetriever for AnnIndex {
     }
 }
 
-pub fn weighted_fusion(lexical: &[RetrievalResult], vector: &[RetrievalResult], lw: f32, vw: f32) -> Vec<RetrievalResult> {
+pub fn weighted_fusion(
+    lexical: &[RetrievalResult],
+    vector: &[RetrievalResult],
+    lw: f32,
+    vw: f32,
+) -> Vec<RetrievalResult> {
     let mut acc: HashMap<&str, f32> = HashMap::new();
-    for r in lexical { *acc.entry(&r.id).or_default() += r.score * lw; }
-    for r in vector { *acc.entry(&r.id).or_default() += r.score * vw; }
-    let mut out: Vec<RetrievalResult> = acc.into_iter().map(|(id, score)| RetrievalResult { id: id.into(), score }).collect();
+    for r in lexical {
+        *acc.entry(&r.id).or_default() += r.score * lw;
+    }
+    for r in vector {
+        *acc.entry(&r.id).or_default() += r.score * vw;
+    }
+    let mut out: Vec<RetrievalResult> = acc
+        .into_iter()
+        .map(|(id, score)| RetrievalResult {
+            id: id.into(),
+            score,
+        })
+        .collect();
     out.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
     out
 }
 
-pub fn reciprocal_rank_fusion(lexical: &[RetrievalResult], vector: &[RetrievalResult], k: f32) -> Vec<RetrievalResult> {
-    let l: Vec<_> = lexical.iter().enumerate().map(|(i, r)| RetrievalResult { id: r.id.clone(), score: 1.0 / (k + i as f32 + 1.0) }).collect();
-    let v: Vec<_> = vector.iter().enumerate().map(|(i, r)| RetrievalResult { id: r.id.clone(), score: 1.0 / (k + i as f32 + 1.0) }).collect();
+pub fn reciprocal_rank_fusion(
+    lexical: &[RetrievalResult],
+    vector: &[RetrievalResult],
+    k: f32,
+) -> Vec<RetrievalResult> {
+    let l: Vec<_> = lexical
+        .iter()
+        .enumerate()
+        .map(|(i, r)| RetrievalResult {
+            id: r.id.clone(),
+            score: 1.0 / (k + i as f32 + 1.0),
+        })
+        .collect();
+    let v: Vec<_> = vector
+        .iter()
+        .enumerate()
+        .map(|(i, r)| RetrievalResult {
+            id: r.id.clone(),
+            score: 1.0 / (k + i as f32 + 1.0),
+        })
+        .collect();
     weighted_fusion(&l, &v, 1.0, 1.0)
 }
 
@@ -182,9 +289,18 @@ mod tests {
     #[test]
     fn bm25_ranks_exact_term_match_highest() {
         let index = Bm25Index::new(vec![
-            DocumentChunk { id: "a".into(), text: "rust retrieval fusion".into() },
-            DocumentChunk { id: "b".into(), text: "python scripts".into() },
-            DocumentChunk { id: "c".into(), text: "rust rust memory".into() },
+            DocumentChunk {
+                id: "a".into(),
+                text: "rust retrieval fusion".into(),
+            },
+            DocumentChunk {
+                id: "b".into(),
+                text: "python scripts".into(),
+            },
+            DocumentChunk {
+                id: "c".into(),
+                text: "rust rust memory".into(),
+            },
         ]);
         let results = index.search("rust", 3);
         assert_eq!(results[0].id, "c");
@@ -192,11 +308,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_markdown_extracts_title_and_metadata() {
+        let record = parse_markdown_record("doc-1", "# Intro\nRust retrieval core.");
+        assert_eq!(record.title.as_deref(), Some("Intro"));
+        assert_eq!(
+            record.metadata.get("source_format").map(String::as_str),
+            Some("markdown")
+        );
+        let chunks = chunk_record(&record, 2);
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
     fn ann_and_bm25_can_be_fused() {
         let chunks = vec![
-            DocumentChunk { id: "a".into(), text: "rust retrieval fusion".into() },
-            DocumentChunk { id: "b".into(), text: "python scripts".into() },
-            DocumentChunk { id: "c".into(), text: "rust memory safety".into() },
+            DocumentChunk {
+                id: "a".into(),
+                text: "rust retrieval fusion".into(),
+            },
+            DocumentChunk {
+                id: "b".into(),
+                text: "python scripts".into(),
+            },
+            DocumentChunk {
+                id: "c".into(),
+                text: "rust memory safety".into(),
+            },
         ];
         let (bm25, ann) = build_retrieval_indices(chunks);
         let fused = reciprocal_rank_fusion(&bm25.search("rust", 3), &ann.search("rust", 3), 60.0);
