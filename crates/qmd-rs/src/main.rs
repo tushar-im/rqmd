@@ -1,6 +1,6 @@
 use retrieval_core::{
-    build_retrieval_indices, chunk_markdown, reciprocal_rank_fusion, LexicalRetriever,
-    VectorRetriever,
+    build_retrieval_indices, chunk_record, parse_markdown_record, reciprocal_rank_fusion,
+    LexicalRetriever, VectorRetriever,
 };
 use std::env;
 use std::fs;
@@ -24,7 +24,8 @@ fn read_markdown_dir(
             .and_then(|x| x.to_str())
             .ok_or("invalid filename")?;
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        chunks.extend(chunk_markdown(doc_id, &content, chunk_size));
+        let record = parse_markdown_record(doc_id, &content);
+        chunks.extend(chunk_record(&record, chunk_size));
     }
 
     if chunks.is_empty() {
@@ -39,7 +40,7 @@ fn write_chunk_index(
 ) -> Result<(), String> {
     let mut out = String::new();
     for chunk in chunks {
-        let text = chunk.text.replace('\t', " ").replace('\n', " ");
+        let text = escape_index_field(&chunk.text);
         out.push_str(&chunk.id);
         out.push('\t');
         out.push_str(&text);
@@ -60,13 +61,45 @@ fn read_chunk_index(index_path: &Path) -> Result<Vec<retrieval_core::DocumentChu
         let text = parts.next().ok_or("missing chunk text")?;
         chunks.push(retrieval_core::DocumentChunk {
             id: id.to_string(),
-            text: text.to_string(),
+            text: unescape_index_field(text)?,
         });
     }
     if chunks.is_empty() {
         return Err(format!("index {} is empty", index_path.display()));
     }
     Ok(chunks)
+}
+
+fn escape_index_field(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn unescape_index_field(input: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('\\') => out.push('\\'),
+            Some(other) => return Err(format!("invalid escape sequence: \\{other}")),
+            None => return Err("dangling escape sequence in index".to_string()),
+        }
+    }
+    Ok(out)
 }
 fn cmd_index(corpus_dir: &str, chunk_size: usize) -> Result<(), String> {
     let chunks = read_markdown_dir(Path::new(corpus_dir), chunk_size)?;
@@ -167,11 +200,11 @@ mod tests {
         let chunks = vec![
             retrieval_core::DocumentChunk {
                 id: "doc:0".into(),
-                text: "hello rust".into(),
+                text: "hello\trust".into(),
             },
             retrieval_core::DocumentChunk {
                 id: "doc:1".into(),
-                text: "vector search".into(),
+                text: "vector\nsearch".into(),
             },
         ];
         let path = dir.join(".qmd_chunks.tsv");
@@ -180,5 +213,11 @@ mod tests {
         assert_eq!(loaded, chunks);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unescape_rejects_invalid_sequences() {
+        let err = unescape_index_field("bad\\xescape").expect_err("expected invalid escape error");
+        assert!(err.contains("invalid escape sequence"));
     }
 }
