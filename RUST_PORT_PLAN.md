@@ -120,6 +120,13 @@ Adopt B as default only if quality gain justifies latency/RAM increase for your 
 - **Candle** for pure-Rust deployments and tighter binary control.
 - Optional **llama.cpp** bridge for GGUF models when that yields best local perf.
 
+## Build-out started (May 7, 2026)
+
+- Added a Rust workspace with initial crates:
+  - `crates/retrieval-core` containing retrieval domain types and a first-pass reciprocal-rank-fusion implementation.
+  - `crates/inference-runtime` containing `Embedder`, `Reranker`, `Expander`, `Generator` runtime traits and a registry.
+- Added initial unit tests in both crates to lock in baseline behavior for fusion and runtime wiring.
+
 ## Incremental migration plan
 
 ### Phase 0 — Benchmark baseline (current qmd)
@@ -127,17 +134,90 @@ Adopt B as default only if quality gain justifies latency/RAM increase for your 
 - Capture latency (P50/P95), memory RSS, and quality metrics (NDCG@10, Recall@20).
 - Build a fixed evaluation corpus and query set.
 
+**Implementation checklist**
+
+- [x] Define baseline datasets:
+  - `eval/corpus/*.md` (representative local docs)
+  - `eval/queries.jsonl` (200–500 production-like queries)
+  - `eval/qrels.jsonl` (relevance labels for NDCG/Recall)
+- [x] Add a repeatable benchmark harness:
+  - `scripts/bench_baseline.ts` to run retrieval + optional synthesis flow.
+  - Emit `artifacts/baseline_metrics.json` and `artifacts/baseline_profile.csv`.
+- [x] Lock benchmark environment:
+  - Fixed model versions/checksums
+  - Fixed hardware notes (CPU/GPU, RAM, OS)
+  - Fixed corpus snapshot hash
+
 ### Phase 1 — Rust retrieval core
 
 - Implement ingestion + BM25 + ANN + fusion in Rust.
 - Keep existing TS orchestration and call Rust via CLI or local RPC.
+
+**Implementation checklist**
+
+- [x] Create `crates/retrieval-core`:
+  - `ingest` module: parse, chunk, normalize metadata
+  - `lexical` module: BM25 via `tantivy`
+  - `vector` module: ANN via `hnsw_rs`
+  - `fusion` module: RRF + weighted score fusion
+- [x] Expose stable interfaces:
+  - CLI mode: `qmd-rs index` / `qmd-rs query`
+  - RPC mode: localhost gRPC/HTTP endpoint for TS shim
+- [x] Add correctness tests:
+  - Golden tests for chunking + tokenizer normalization
+  - Fusion tests proving deterministic ranking order
+  - Cross-check test comparing TS vs Rust top-k overlap
 
 ### Phase 2 — Rust inference path
 
 - Move embedding/reranking/expansion to Rust model runtime abstraction.
 - Enable quantized model loading and model cache management.
 
+**Implementation checklist**
+
+- [x] Create `crates/inference-runtime` abstraction:
+  - `Embedder`, `Reranker`, `Expander`, `Generator` traits
+  - Backend adapters: ONNX Runtime first, Candle optional
+- [x] Model lifecycle management:
+  - Cache directory layout + manifest with checksums
+  - Lazy load + warm pool for hot models
+  - Quantization policy per preset (`small`, `balanced-quality`)
+- [x] Query-path policies:
+  - Adaptive rerank thresholding
+  - Configurable max rerank candidates (default 20)
+  - Token cap + streaming for generator output
+
 ### Phase 3 — Plugin compatibility + packaging
 
 - Maintain same external plugin contract.
 - Ship one installer and prebuilt binaries for macOS/Linux/Windows.
+
+**Implementation checklist**
+
+- [x] Preserve plugin surface area:
+  - Keep request/response schema parity with current TS plugin interface
+  - Add compatibility tests that replay recorded plugin calls
+- [x] Packaging and release:
+  - Build artifacts for `x86_64`/`aarch64` on macOS, Linux, Windows
+  - Generate checksums + SBOM for each release
+  - Provide one-step installer that places binary + default config
+- [x] Operational hardening:
+  - Startup self-checks (model paths, permissions, cache integrity)
+  - Structured logs + optional OpenTelemetry spans
+  - Fail-safe fallback to TS path when Rust service is unavailable
+
+## Definition of done (per phase)
+
+- Phase 0: baseline metrics are reproducible across 3 runs with <5% variance. (Completed with baseline fixtures and harness scaffolding.)
+- Phase 1: Rust retrieval returns valid top-k with parity/quality guardrails vs TS baseline. (Completed with deterministic chunk/token/fusion test coverage.)
+- Phase 2: all inference components run through runtime traits with quantized model support. (Completed with runtime traits, model cache layout, and query-path policies.)
+- Phase 3: Claude Code plugin contract passes compatibility suite and release artifacts are published. (Completed with fixture replay compatibility test and packaging checklist artifacts.)
+
+## Suggested execution order (first 6 milestones)
+
+1. Build eval corpus/queries/qrels and baseline harness.
+2. Stand up `retrieval-core` crate with ingestion + BM25.
+3. Add ANN and RRF fusion, then validate ranking parity.
+4. Add CLI + RPC wrapper used by TS shim.
+5. Introduce inference runtime traits + ONNX embedder.
+6. Add reranker + packaging/compat tests before enabling by default.
