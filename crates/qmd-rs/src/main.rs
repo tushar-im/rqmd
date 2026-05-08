@@ -41,10 +41,26 @@ fn extract_json_string(body: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
     let i = body.find(&needle)?;
     let rest = &body[i + needle.len()..];
-    let q = rest.find('"')?;
-    let rest = &rest[q + 1..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    let colon = rest.find(':')?;
+    let mut chars = rest[colon + 1..].trim_start().chars();
+    if chars.next()? != '"' {
+        return None;
+    }
+    let mut out = String::new();
+    let mut escaped = false;
+    for ch in chars {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some(out),
+            _ => out.push(ch),
+        }
+    }
+    None
 }
 
 fn extract_json_usize(body: &str, key: &str) -> Option<usize> {
@@ -200,6 +216,14 @@ fn unescape_index_field(input: &str) -> Result<String, String> {
     Ok(out)
 }
 
+fn json_escape(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
+}
+
 fn startup_self_checks() -> Result<(), String> {
     inference_runtime::ModelCache::new(".rqmd-models").ensure_layout()?;
     log_event("info", "startup_checks_ok");
@@ -287,7 +311,7 @@ fn cmd_plugin() -> Result<(), String> {
         Ok(results) => {
             let items = results
                 .into_iter()
-                .map(|(id, score)| format!("{{\"id\":\"{}\",\"score\":{}}}", id, score))
+                .map(|(id, score)| format!("{{\"id\":\"{}\",\"score\":{}}}", json_escape(&id), score))
                 .collect::<Vec<_>>()
                 .join(",");
             println!("{{\"results\":[{}]}}", items);
@@ -364,5 +388,11 @@ mod tests {
         assert_eq!(req.query, "rust");
         assert_eq!(req.top_k, 5);
         assert_eq!(req.corpus_dir, "eval/corpus");
+    }
+
+    #[test]
+    fn parse_plugin_request_handles_escaped_quotes() {
+        let req = parse_plugin_request("{\"query\":\"rust \\\"book\\\"\"}").expect("parse");
+        assert_eq!(req.query, "rust \"book\"");
     }
 }
