@@ -395,4 +395,10 @@ mod tests {
         let req = parse_plugin_request("{\"query\":\"rust \\\"book\\\"\"}").expect("parse");
         assert_eq!(req.query, "rust \"book\"");
     }
+
+    #[test]
+    fn json_escape_escapes_control_chars_and_quotes() {
+        let escaped = json_escape("a\\\"b\n\tc");
+        assert_eq!(escaped, "a\\\\\\\"b\\n\\tc");
+    }
 }
