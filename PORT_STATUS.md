@@ -44,7 +44,7 @@
 - Add batching/concurrency controls and warm pools for latency targets.
 
 ### API/Plugin compatibility
-- Implement real local RPC/HTTP service and stable request/response schemas.
+- Implement real local RPC/HTTP service and stable request/response schemas. (In progress: `GET /health` + `POST /query` implemented in `qmd-rs serve` with JSON request/response handling.)
 - Build TS shim parity tests against current plugin contract.
 - Add replay/integration tests with realistic plugin traces.
 

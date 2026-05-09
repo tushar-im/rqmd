@@ -29,7 +29,8 @@ fn log_event(level: &str, msg: &str) {
 fn parse_plugin_request(body: &str) -> Result<PluginRequest, String> {
     let query = extract_json_string(body, "query").ok_or("missing query")?;
     let top_k = extract_json_usize(body, "top_k").unwrap_or(5);
-    let corpus_dir = extract_json_string(body, "corpus_dir").unwrap_or_else(|| "eval/corpus".into());
+    let corpus_dir =
+        extract_json_string(body, "corpus_dir").unwrap_or_else(|| "eval/corpus".into());
     Ok(PluginRequest {
         query,
         top_k,
@@ -311,7 +312,9 @@ fn cmd_plugin() -> Result<(), String> {
         Ok(results) => {
             let items = results
                 .into_iter()
-                .map(|(id, score)| format!("{{\"id\":\"{}\",\"score\":{}}}", json_escape(&id), score))
+                .map(|(id, score)| {
+                    format!("{{\"id\":\"{}\",\"score\":{}}}", json_escape(&id), score)
+                })
                 .collect::<Vec<_>>()
                 .join(",");
             println!("{{\"results\":[{}]}}", items);
@@ -324,14 +327,96 @@ fn cmd_plugin() -> Result<(), String> {
     Ok(())
 }
 
-fn handle_http(mut stream: TcpStream) -> Result<(), String> {
+fn parse_content_length(headers: &str) -> usize {
+    headers
+        .lines()
+        .find_map(|line| {
+            let mut parts = line.splitn(2, ':');
+            let key = parts.next()?.trim();
+            let value = parts.next()?.trim();
+            if key.eq_ignore_ascii_case("content-length") {
+                value.parse::<usize>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0)
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Result<String, String> {
     let mut buf = [0_u8; 1024];
-    let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let (st, body) = if req.starts_with("GET /health") {
-        ("200 OK", "{\"status\":\"ok\"}")
-    } else {
-        ("404 Not Found", "{\"status\":\"not_found\"}")
+    let mut req = Vec::new();
+    let mut header_end = None;
+    let mut expected_total = None;
+
+    loop {
+        let n = stream.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        req.extend_from_slice(&buf[..n]);
+
+        if header_end.is_none() {
+            if let Some(i) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                let end = i + 4;
+                header_end = Some(end);
+                let headers = String::from_utf8_lossy(&req[..end]);
+                let content_length = parse_content_length(&headers);
+                expected_total = Some(end + content_length);
+            }
+        }
+
+        if let Some(total) = expected_total {
+            if req.len() >= total {
+                break;
+            }
+        }
+    }
+
+    String::from_utf8(req).map_err(|e| e.to_string())
+}
+
+fn handle_http(mut stream: TcpStream) -> Result<(), String> {
+    let req = read_http_request(&mut stream)?;
+    let mut lines = req.lines();
+    let request_line = lines.next().unwrap_or_default();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let path = parts.next().unwrap_or_default();
+
+    let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
+    let body_raw = &req[body_start..];
+
+    let (st, body) = match (method, path) {
+        ("GET", "/health") => ("200 OK", "{\"status\":\"ok\"}".to_string()),
+        ("POST", "/query") => {
+            let top_k = extract_json_usize(body_raw, "top_k").unwrap_or(5);
+            let corpus_dir = extract_json_string(body_raw, "corpus_dir")
+                .unwrap_or_else(|| "eval/corpus".to_string());
+            match extract_json_string(body_raw, "query") {
+                Some(query) => match retrieve(&corpus_dir, &query, top_k, 64) {
+                    Ok(results) => {
+                        let items = results
+                            .into_iter()
+                            .map(|(id, score)| {
+                                format!("{{\"id\":\"{}\",\"score\":{}}}", json_escape(&id), score)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        ("200 OK", format!("{{\"results\":[{}]}}", items))
+                    }
+                    Err(err) => (
+                        "500 Internal Server Error",
+                        format!("{{\"error\":\"{}\"}}", json_escape(&err)),
+                    ),
+                },
+                None => (
+                    "400 Bad Request",
+                    "{\"error\":\"missing query\"}".to_string(),
+                ),
+            }
+        }
+        _ => ("404 Not Found", "{\"status\":\"not_found\"}".to_string()),
     };
     let rsp = format!(
         "HTTP/1.1 {st}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
@@ -400,5 +485,18 @@ mod tests {
     fn json_escape_escapes_control_chars_and_quotes() {
         let escaped = json_escape("a\\\"b\n\tc");
         assert_eq!(escaped, "a\\\\\\\"b\\n\\tc");
+    }
+
+    #[test]
+    fn extract_json_usize_handles_missing() {
+        assert_eq!(extract_json_usize("{}", "top_k"), None);
+    }
+
+    #[test]
+    fn parse_content_length_is_case_insensitive() {
+        let headers = "POST /query HTTP/1.1\r\nHost: localhost\r\nContent-Length: 12\r\n\r\n";
+        assert_eq!(parse_content_length(headers), 12);
+        let headers_lower = "POST /query HTTP/1.1\r\nhost: localhost\r\ncontent-length: 7\r\n\r\n";
+        assert_eq!(parse_content_length(headers_lower), 7);
     }
 }
